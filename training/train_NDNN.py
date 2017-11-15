@@ -100,7 +100,6 @@ def train(settings, warm_start_nn=None, wdir='.'):
     features = tf.placeholder(settings['dtype'], (None, input_df.shape[1]))
     targets = tf.placeholder(settings['dtype'], (None, target_df.shape[1]))
 
-    dataset = Dataset.from_tensor_slices((features, targets))
 
     # [Other transformations on `dataset`...]
     # Keep option to restore splitted dataset from file for debugging
@@ -152,16 +151,21 @@ def train(settings, warm_start_nn=None, wdir='.'):
         val_target_df = target_df[:val_boundary]
         train_input_df = input_df[val_boundary:]
         train_target_df = target_df[val_boundary:]
+
+        train_dataset = Dataset.from_tensor_slices((train_input_df, train_target_df))
+        val_dataset = Dataset.from_tensor_slices((val_input_df, val_target_df))
         batch_size = int(np.ceil(len(input_df)/minibatches))
 
-        val_iterator = dataset.batch(len(val_input_df)).repeat().make_initializable_iterator()
-        dataset = dataset.batch(batch_size)
-        dataset = dataset.shuffle(buffer_size=batch_size + 1)
-        train_iterator = dataset.make_initializable_iterator()
+        val_iterator = val_dataset.batch(len(val_input_df)).repeat().make_initializable_iterator()
+        train_dataset = train_dataset.batch(batch_size)
+        #train_dataset = train_dataset.shuffle(buffer_size=batch_size + 1)
+        train_dataset = train_dataset.prefetch(int(1.5 * batch_size))
+        train_dataset = train_dataset.repeat()
+        train_iterator = train_dataset.make_initializable_iterator()
         handle = tf.placeholder(tf.string, shape=[])
 
         iterator = Iterator.from_string_handle(
-                handle, dataset.output_types, dataset.output_shapes)
+                handle, train_dataset.output_types, train_dataset.output_shapes)
         x, y_ds = iterator.get_next()
     timediff(start, 'Dataset split')
 
@@ -389,61 +393,66 @@ def train(settings, warm_start_nn=None, wdir='.'):
     timediff(start, 'Training started')
     train_start = time.time()
     ii = 0
+    sess.run(train_iterator.initializer, feed_dict={
+                                      features: train_input_df,
+                                      targets: train_target_df})
     try:
         for epoch in range(max_epoch):
-            sess.run(train_iterator.initializer, feed_dict={
-                                              features: train_input_df,
-                                              targets: train_target_df})
+            print('epoch', epoch, 'step', 'pre', 'starting', time.time() - train_start)
+            #sess.run(train_iterator.initializer, feed_dict={
+            #                                  features: train_input_df,
+            #                                  targets: train_target_df})
 
-            while True: # If NOT epoch done
-                try:
-                    # Extra debugging every steps_per_report
-                    if not ii % steps_per_report and steps_per_report != np.inf:
-                        run_options = tf.RunOptions(
-                            trace_level=tf.RunOptions.FULL_TRACE)
-                        run_metadata = tf.RunMetadata()
-                    else:
-                        run_options = None
-                        run_metadata = None
-                    # If we have a scipy-style optimizer
-                    if optimizer:
-                        #optimizer.minimize(sess, feed_dict=feed_dict)
-                        optimizer.minimize(sess,
-                                           feed_dict=feed_dict,
-                        #                   options=run_options,
-                        #                   run_metadata=run_metadata)
-                                          )
-                        lo = loss.eval(feed_dict=feed_dict)
-                        meanse = mse.eval(feed_dict=feed_dict)
-                        meanabse = mabse.eval(feed_dict=feed_dict)
-                        l1norm = l1_norm.eval(feed_dict=feed_dict)
-                        l2norm = l2_norm.eval(feed_dict=feed_dict)
-                        summary = merged.eval(feed_dict=feed_dict)
-                    else: # If we have a TensorFlow-style optimizer
-                        summary, lo, meanse, meanabse, l1norm, l2norm, _  = sess.run([merged, loss, mse, mabse, l1_norm, l2_norm, train_step],
-                                                                                     feed_dict={handle: train_handle},
-                                                          options=run_options,
-                                                          run_metadata=run_metadata
-                                                          )
-                    train_writer.add_summary(summary, ii)
+            print('epoch', epoch, 'step', 'pre', 'initialized', time.time() - train_start)
+            for step in range(minibatches):
+                # Extra debugging every steps_per_report
+                if not step % steps_per_report and steps_per_report != np.inf:
+                    run_options = tf.RunOptions(
+                        trace_level=tf.RunOptions.FULL_TRACE)
+                    run_metadata = tf.RunMetadata()
+                else:
+                    run_options = None
+                    run_metadata = None
+                # If we have a scipy-style optimizer
+                if optimizer:
+                    #optimizer.minimize(sess, feed_dict=feed_dict)
+                    optimizer.minimize(sess,
+                                       feed_dict=feed_dict,
+                    #                   options=run_options,
+                    #                   run_metadata=run_metadata)
+                                      )
+                    lo = loss.eval(feed_dict=feed_dict)
+                    meanse = mse.eval(feed_dict=feed_dict)
+                    meanabse = mabse.eval(feed_dict=feed_dict)
+                    l1norm = l1_norm.eval(feed_dict=feed_dict)
+                    l2norm = l2_norm.eval(feed_dict=feed_dict)
+                    summary = merged.eval(feed_dict=feed_dict)
+                else: # If we have a TensorFlow-style optimizer
+                    summary, lo, meanse, meanabse, l1norm, l2norm, _  = sess.run([merged, loss, mse, mabse, l1_norm, l2_norm, train_step],
+                                                                                 feed_dict={handle: train_handle},
+                                                      options=run_options,
+                                                      run_metadata=run_metadata
+                                                      )
+                print('epoch', epoch, 'step', step, 'train step done', time.time() - train_start)
+                train_writer.add_summary(summary, step)
 
-                    # Extra debugging every steps_per_report
-                    if not ii % steps_per_report and steps_per_report != np.inf:
-                        tl = timeline.Timeline(run_metadata.step_stats)
-                        ctf = tl.generate_chrome_trace_format()
-                        with open('timeline_run.json', 'w') as f:
-                            f.write(ctf)
-                    # Add to CSV log buffer
-                    if track_training_time is True:
-                        train_log.loc[ii] = (epoch, time.time() - train_start, lo, meanse, meanabse, l1norm, l2norm)
-                except tf.errors.OutOfRangeError:
-                    break
+                # Extra debugging every steps_per_report
+                if not step% steps_per_report and steps_per_report != np.inf:
+                    tl = timeline.Timeline(run_metadata.step_stats)
+                    ctf = tl.generate_chrome_trace_format()
+                    with open('timeline_run.json', 'w') as f:
+                        f.write(ctf)
+                    train_writer.add_run_metadata(run_metadata, 'epoch%d step%d' % (epoch, step))
+                # Add to CSV log buffer
+                if track_training_time is True:
+                    train_log.loc[epoch*minibatches + step] = (epoch, time.time() - train_start, lo, meanse, meanabse, l1norm, l2norm)
 
             ########
             # After-epoch stuff
             ########
 
             # Write figures, summaries and check early stopping each epoch
+            print('epoch', epoch, 'done')
             if track_training_time is True:
                 step_start = time.time()
             # Run with full trace every epochs_per_report Gives full runtime information
@@ -464,25 +473,25 @@ def train(settings, warm_start_nn=None, wdir='.'):
 
             validation_writer.add_summary(summary, ii)
             # More debugging every epochs_per_report
-            if not ii % epochs_per_report and epochs_per_report != np.inf:
+            if not epoch % epochs_per_report and epochs_per_report != np.inf:
                 tl = timeline.Timeline(run_metadata.step_stats)
                 ctf = tl.generate_chrome_trace_format()
                 with open('timeline.json', 'w') as f:
                     f.write(ctf)
 
-                validation_writer.add_run_metadata(run_metadata, 'step%d' % ii)
+                validation_writer.add_run_metadata(run_metadata, 'epoch%d' % epoch)
 
             # Save checkpoint
             save_path = saver.save(sess, os.path.join(checkpoint_dir,
-            'model.ckpt'), global_step=ii)
+            'model.ckpt'), global_step=epoch)
 
             # Update CSV logs
             if track_training_time is True:
-                validation_log.loc[ii] = (epoch, time.time() - train_start, lo, meanse, meanabse, l1norm, l2norm)
+                validation_log.loc[epoch] = (epoch, time.time() - train_start, lo, meanse, meanabse, l1norm, l2norm)
 
-                validation_log.loc[ii:].to_csv(validation_log_file, header=False)
+                validation_log.loc[epoch:].to_csv(validation_log_file, header=False)
                 validation_log = validation_log[0:0]
-                train_log.loc[ii - minibatches:].to_csv(train_log_file, header=False)
+                train_log.loc[epoch - minibatches:].to_csv(train_log_file, header=False)
                 train_log = train_log[0:0]
 
             # Determine early-stopping criterion
