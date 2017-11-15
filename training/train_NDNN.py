@@ -159,7 +159,7 @@ def train(settings, warm_start_nn=None, wdir='.'):
         val_iterator = val_dataset.batch(len(val_input_df)).repeat().make_initializable_iterator()
         train_dataset = train_dataset.batch(batch_size)
         #train_dataset = train_dataset.shuffle(buffer_size=batch_size + 1)
-        train_dataset = train_dataset.prefetch(int(1.5 * batch_size))
+        #train_dataset = train_dataset.prefetch(int(1.5 * batch_size))
         train_dataset = train_dataset.repeat()
         train_iterator = train_dataset.make_initializable_iterator()
         handle = tf.placeholder(tf.string, shape=[])
@@ -452,7 +452,7 @@ def train(settings, warm_start_nn=None, wdir='.'):
             ########
 
             # Write figures, summaries and check early stopping each epoch
-            print('epoch', epoch, 'done')
+            print('epoch', epoch, 'done',time.time() - train_start)
             if track_training_time is True:
                 step_start = time.time()
             # Run with full trace every epochs_per_report Gives full runtime information
@@ -469,6 +469,7 @@ def train(settings, warm_start_nn=None, wdir='.'):
                                                                                      feed_dict={handle: val_handle},
                                            options=run_options,
                                            run_metadata=run_metadata)
+            print('epoch', epoch, 'var calc',time.time() - train_start)
 
 
             validation_writer.add_summary(summary, ii)
@@ -482,8 +483,10 @@ def train(settings, warm_start_nn=None, wdir='.'):
                 validation_writer.add_run_metadata(run_metadata, 'epoch%d' % epoch)
 
             # Save checkpoint
+            print('epoch', epoch, 'saving checkpoint ',time.time() - train_start)
             save_path = saver.save(sess, os.path.join(checkpoint_dir,
-            'model.ckpt'), global_step=epoch)
+            'model.ckpt'), global_step=epoch, write_meta_graph=False)
+            print('epoch', epoch, 'checkpoint saved',time.time() - train_start)
 
             # Update CSV logs
             if track_training_time is True:
@@ -547,6 +550,7 @@ def train(settings, warm_start_nn=None, wdir='.'):
                       % (not_improved))
                 break
 
+            print('epoch', epoch, 'loop done',time.time() - train_start)
             # Stop if loss is nan or inf
             if np.isnan(lo) or np.isinf(lo):
                 print('Loss is {}! Stopping..'.format(lo))
