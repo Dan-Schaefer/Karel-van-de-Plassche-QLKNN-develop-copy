@@ -19,6 +19,7 @@ import subprocess
 import tensorflow as tf
 from tensorflow.contrib import opt
 from tensorflow.python.client import timeline
+from tensorflow.contrib.data import Dataset
 from itertools import product
 
 
@@ -28,7 +29,7 @@ from IPython import embed
 import json
 import sys
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from datasets import Dataset, Datasets, convert_panda, split_panda, shuffle_panda
+#from datasets import Dataset, Datasets, convert_panda, split_panda, shuffle_panda
 from nn_primitives import model_to_json, weight_variable, bias_variable, variable_summaries, nn_layer, normab, normsm
 
 FLAGS = None
@@ -87,13 +88,20 @@ def train(settings, warm_start_nn=None, wdir='.'):
 
     train_dims = target_df.columns
     scan_dims = input_df.columns
+
+    features = tf.placeholder(settings['dtype'], input_df.shape)
+    targets = tf.placeholder(settings['dtype'], target_df.shape)
+
+    dataset = Dataset.from_tensor_slices((features, targets))
+
+    # [Other transformations on `dataset`...]
     # Keep option to restore splitted dataset from file for debugging
-    restore_split_backup = False
-    if restore_split_backup and os.path.exists('splitted.h5'):
-        datasets = Datasets.read_hdf('splitted.h5')
-    else:
-        datasets = convert_panda(input_df, target_df, settings['validation_fraction'], settings['test_fraction'])
-        datasets.to_hdf('splitted.h5')
+    #restore_split_backup = False
+    #if restore_split_backup and os.path.exists('splitted.h5'):
+    #    datasets = Datasets.read_hdf('splitted.h5')
+    #else:
+    #    datasets = convert_panda(input_df, target_df, settings['validation_fraction'], settings['test_fraction'])
+    #    datasets.to_hdf('splitted.h5')
 
     timediff(start, 'Dataset split')
 
@@ -129,9 +137,9 @@ def train(settings, warm_start_nn=None, wdir='.'):
 
     # Input placeholders
     with tf.name_scope('input'):
-        x = tf.placeholder(datasets.train._target.dtypes.iloc[0],
+        x = tf.placeholder(dataset.output_types[0],
                            [None, len(scan_dims)], name='x-input')
-        y_ds = tf.placeholder(x.dtype, [None, len(train_dims)], name='y-input')
+        y_ds = tf.placeholder(dataset.output_types[1], [None, len(train_dims)], name='y-input')
 
     # Standardize input
     with tf.name_scope('standardize'):
@@ -314,7 +322,17 @@ def train(settings, warm_start_nn=None, wdir='.'):
 
     # Split dataset in minibatches
     minibatches = settings['minibatches']
-    batch_size = int(np.floor(datasets.train.num_examples/minibatches))
+    batch_size = int(np.ceil(len(input_df)/minibatches))
+
+    dataset = dataset.batch(batch_size)
+    dataset = dataset.shuffle(buffer_size=batch_size + 1)
+    dataset = dataset.repeat()
+    iterator = dataset.make_initializable_iterator()
+    sess.run(iterator.initializer, feed_dict={features: input_df,
+                                              targets: target_df})
+
+    next_element = iterator.get_next()
+    embed()
 
     timediff(start, 'Starting loss calculation')
     xs, ys = datasets.validation.next_batch(-1, shuffle=False)
