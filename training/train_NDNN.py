@@ -19,7 +19,7 @@ import subprocess
 import tensorflow as tf
 from tensorflow.contrib import opt
 from tensorflow.python.client import timeline
-from tensorflow.contrib.data import Dataset
+from tensorflow.contrib.data import Dataset, Iterator
 from itertools import product
 
 
@@ -33,6 +33,14 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from nn_primitives import model_to_json, weight_variable, bias_variable, variable_summaries, nn_layer, normab, normsm
 
 FLAGS = None
+
+def shuffle_pandas(dfs):
+    assert all([len(df) == len(dfs[0]) for df in dfs])
+    perm = np.arange(len(dfs[0]))
+    np.random.shuffle(perm)
+    for df in dfs:
+        df = df.iloc[perm]
+    return dfs
 
 def timediff(start, event):
     print('{:35} {:5.0f}s'.format(event + ' after', time.time() - start))
@@ -89,8 +97,8 @@ def train(settings, warm_start_nn=None, wdir='.'):
     train_dims = target_df.columns
     scan_dims = input_df.columns
 
-    features = tf.placeholder(settings['dtype'], input_df.shape)
-    targets = tf.placeholder(settings['dtype'], target_df.shape)
+    features = tf.placeholder(settings['dtype'], (None, input_df.shape[1]))
+    targets = tf.placeholder(settings['dtype'], (None, target_df.shape[1]))
 
     dataset = Dataset.from_tensor_slices((features, targets))
 
@@ -103,7 +111,6 @@ def train(settings, warm_start_nn=None, wdir='.'):
     #    datasets = convert_panda(input_df, target_df, settings['validation_fraction'], settings['test_fraction'])
     #    datasets.to_hdf('splitted.h5')
 
-    timediff(start, 'Dataset split')
 
     """
     # Get a (random) slice of the data to visualize convergence
@@ -137,9 +144,26 @@ def train(settings, warm_start_nn=None, wdir='.'):
 
     # Input placeholders
     with tf.name_scope('input'):
-        x = tf.placeholder(dataset.output_types[0],
-                           [None, len(scan_dims)], name='x-input')
-        y_ds = tf.placeholder(dataset.output_types[1], [None, len(train_dims)], name='y-input')
+        # Split dataset in minibatches
+        minibatches = settings['minibatches']
+        input_df, target_df = shuffle_pandas([input_df, target_df])
+        val_boundary = int(len(input_df) * settings['validation_fraction'])
+        val_input_df = input_df[:val_boundary]
+        val_target_df = target_df[:val_boundary]
+        train_input_df = input_df[val_boundary:]
+        train_target_df = target_df[val_boundary:]
+        batch_size = int(np.ceil(len(input_df)/minibatches))
+
+        val_iterator = dataset.batch(len(val_input_df)).repeat().make_initializable_iterator()
+        dataset = dataset.batch(batch_size)
+        dataset = dataset.shuffle(buffer_size=batch_size + 1)
+        train_iterator = dataset.make_initializable_iterator()
+        handle = tf.placeholder(tf.string, shape=[])
+
+        iterator = Iterator.from_string_handle(
+                handle, dataset.output_types, dataset.output_shapes)
+        x, y_ds = iterator.get_next()
+    timediff(start, 'Dataset split')
 
     # Standardize input
     with tf.name_scope('standardize'):
@@ -320,25 +344,16 @@ def train(settings, warm_start_nn=None, wdir='.'):
     train_log = pd.DataFrame(columns=['epoch', 'walltime', 'loss', 'mse', 'mabse', 'l1_norm', 'l2_norm'])
     validation_log = pd.DataFrame(columns=['epoch', 'walltime', 'loss', 'mse', 'mabse', 'l1_norm', 'l2_norm'])
 
-    # Split dataset in minibatches
-    minibatches = settings['minibatches']
-    batch_size = int(np.ceil(len(input_df)/minibatches))
+    sess.run(val_iterator.initializer, feed_dict={                                              features: val_input_df,
+                                              targets: val_target_df})
 
-    dataset = dataset.batch(batch_size)
-    dataset = dataset.shuffle(buffer_size=batch_size + 1)
-    dataset = dataset.repeat()
-    iterator = dataset.make_initializable_iterator()
-    sess.run(iterator.initializer, feed_dict={features: input_df,
-                                              targets: target_df})
-
-    next_element = iterator.get_next()
-    embed()
-
+    train_handle = sess.run(train_iterator.string_handle())
+    val_handle = sess.run(val_iterator.string_handle())
     timediff(start, 'Starting loss calculation')
-    xs, ys = datasets.validation.next_batch(-1, shuffle=False)
-    feed_dict = {x: xs, y_ds: ys, is_train: False}
+    #xs, ys = datasets.validation.next_batch(-1, shuffle=False)
+    #feed_dict = {x: xs, y_ds: ys, is_train: False}
     summary, lo, meanse, meanabse, l1norm, l2norm  = sess.run([merged, loss, mse, mabse, l1_norm, l2_norm],
-                                                              feed_dict=feed_dict)
+                                                              feed_dict={handle: val_handle})
     train_log.loc[0] = (epoch, 0, lo, meanse, meanabse, l1norm, l2norm)
     validation_log.loc[0] = (epoch, 0, lo, meanse, meanabse, l1norm, l2norm)
 
@@ -373,140 +388,155 @@ def train(settings, warm_start_nn=None, wdir='.'):
 
     timediff(start, 'Training started')
     train_start = time.time()
+    ii = 0
     try:
-        for ii in range(steps_per_epoch * max_epoch):
-            # Write figures, summaries and check early stopping each epoch
-            if datasets.train.epochs_completed > epoch:
-                if track_training_time is True:
-                    step_start = time.time()
-                epoch = datasets.train.epochs_completed
-                xs, ys = datasets.validation.next_batch(-1, shuffle=False)
-                feed_dict = {x: xs, y_ds: ys, is_train: False}
-                # Run with full trace every epochs_per_report Gives full runtime information
-                if not ii % epochs_per_report and (ii != 0 or epochs_per_report == 1):
-                    run_options = tf.RunOptions(
-                        trace_level=tf.RunOptions.FULL_TRACE)
-                    run_metadata = tf.RunMetadata()
-                else:
-                    run_options = None
-                    run_metadata = None
+        for epoch in range(max_epoch):
+            sess.run(train_iterator.initializer, feed_dict={
+                                              features: train_input_df,
+                                              targets: train_target_df})
 
-                # Calculate all variables with the validation set
-                summary, lo, meanse, meanabse, l1norm, l2norm  = sess.run([merged, loss, mse, mabse, l1_norm, l2_norm],
-                                               feed_dict=feed_dict,
-                                               options=run_options,
-                                               run_metadata=run_metadata)
+            while True: # If NOT epoch done
+                try:
+                    # Extra debugging every steps_per_report
+                    if not ii % steps_per_report and steps_per_report != np.inf:
+                        run_options = tf.RunOptions(
+                            trace_level=tf.RunOptions.FULL_TRACE)
+                        run_metadata = tf.RunMetadata()
+                    else:
+                        run_options = None
+                        run_metadata = None
+                    # If we have a scipy-style optimizer
+                    if optimizer:
+                        #optimizer.minimize(sess, feed_dict=feed_dict)
+                        optimizer.minimize(sess,
+                                           feed_dict=feed_dict,
+                        #                   options=run_options,
+                        #                   run_metadata=run_metadata)
+                                          )
+                        lo = loss.eval(feed_dict=feed_dict)
+                        meanse = mse.eval(feed_dict=feed_dict)
+                        meanabse = mabse.eval(feed_dict=feed_dict)
+                        l1norm = l1_norm.eval(feed_dict=feed_dict)
+                        l2norm = l2_norm.eval(feed_dict=feed_dict)
+                        summary = merged.eval(feed_dict=feed_dict)
+                    else: # If we have a TensorFlow-style optimizer
+                        summary, lo, meanse, meanabse, l1norm, l2norm, _  = sess.run([merged, loss, mse, mabse, l1_norm, l2_norm, train_step],
+                                                                                     feed_dict={handle: train_handle},
+                                                          options=run_options,
+                                                          run_metadata=run_metadata
+                                                          )
+                    train_writer.add_summary(summary, ii)
 
-
-                validation_writer.add_summary(summary, ii)
-                # More debugging every epochs_per_report
-                if not ii % epochs_per_report and (ii != 0 or epochs_per_report == 1):
-                    tl = timeline.Timeline(run_metadata.step_stats)
-                    ctf = tl.generate_chrome_trace_format()
-                    with open('timeline.json', 'w') as f:
-                        f.write(ctf)
-
-                    validation_writer.add_run_metadata(run_metadata, 'step%d' % ii)
-
-                # Save checkpoint
-                save_path = saver.save(sess, os.path.join(checkpoint_dir,
-                'model.ckpt'), global_step=ii)
-
-                # Update CSV logs
-                if track_training_time is True:
-                    validation_log.loc[ii] = (epoch, time.time() - train_start, lo, meanse, meanabse, l1norm, l2norm)
-
-                    validation_log.loc[ii:].to_csv(validation_log_file, header=False)
-                    validation_log = validation_log[0:0]
-                    train_log.loc[ii - minibatches:].to_csv(train_log_file, header=False)
-                    train_log = train_log[0:0]
-
-                # Determine early-stopping criterion
-                if settings['early_stop_measure'] == 'mse':
-                    early_measure = meanse
-                elif settings['early_stop_measure'] == 'loss':
-                    early_measure = lo
-                elif settings['early_stop_measure'] == 'none':
-                    early_measure = np.nan
-
-                # Early stopping, check if measure is better
-                if early_measure < best_early_measure:
-                    best_early_measure = early_measure
-                    if save_best_networks:
-                        nn_best_file = os.path.join(checkpoint_dir,
-                                                      'nn_checkpoint_' + str(epoch) + '.json')
-                        trainable = {x.name: tf.to_double(x).eval(session=sess).tolist() for x in tf.trainable_variables()}
-                        model_to_json(nn_best_file, 
-                                      trainable,
-                                      scan_dims.values.tolist(),
-                                      train_dims.values.tolist(),
-                                      datasets.train, scale_factor.astype('float64'),
-                                      scale_bias.astype('float64'),
-                                      l2_scale,
-                                      settings)
-                    not_improved = 0
-                else: # If early measure is not better
-                    not_improved += 1
-                # If not improved in 'early_stop' epoch, stop
-                if settings['early_stop_measure'] != 'none' and not_improved >= settings['early_stop_after']:
-                    if save_checkpoint_networks:
-                        nn_checkpoint_file = os.path.join(checkpoint_dir,
-                                                      'nn_checkpoint_' + str(epoch) + '.json')
-                        trainable = {x.name: tf.to_double(x).eval(session=sess).tolist() for x in tf.trainable_variables()}
-                        model_to_json(nn_checkpoint_file,
-                                      trainable,
-                                      scan_dims.values.tolist(),
-                                      train_dims.values.tolist(),
-                                      datasets.train, scale_factor.astype('float64'),
-                                      scale_bias.astype('float64'),
-                                      l2_scale,
-                                      settings)
-
-                    print('Not improved for %s epochs, stopping..'
-                          % (not_improved))
+                    # Extra debugging every steps_per_report
+                    if not ii % steps_per_report and steps_per_report != np.inf:
+                        tl = timeline.Timeline(run_metadata.step_stats)
+                        ctf = tl.generate_chrome_trace_format()
+                        with open('timeline_run.json', 'w') as f:
+                            f.write(ctf)
+                    # Add to CSV log buffer
+                    if track_training_time is True:
+                        train_log.loc[ii] = (epoch, time.time() - train_start, lo, meanse, meanabse, l1norm, l2norm)
+                except tf.errors.OutOfRangeError:
                     break
-            else: # If NOT epoch done
-                # Extra debugging every steps_per_report
-                if not ii % steps_per_report and (ii != 0 or steps_per_report == 1):
-                    run_options = tf.RunOptions(
-                        trace_level=tf.RunOptions.FULL_TRACE)
-                    run_metadata = tf.RunMetadata()
-                else:
-                    run_options = None
-                    run_metadata = None
-                xs, ys = datasets.train.next_batch(batch_size)
-                feed_dict = {x: xs, y_ds: ys, is_train: True}
-                # If we have a scipy-style optimizer
-                if optimizer:
-                    #optimizer.minimize(sess, feed_dict=feed_dict)
-                    optimizer.minimize(sess,
-                                       feed_dict=feed_dict,
-                    #                   options=run_options,
-                    #                   run_metadata=run_metadata)
-                                      )
-                    lo = loss.eval(feed_dict=feed_dict)
-                    meanse = mse.eval(feed_dict=feed_dict)
-                    meanabse = mabse.eval(feed_dict=feed_dict)
-                    l1norm = l1_norm.eval(feed_dict=feed_dict)
-                    l2norm = l2_norm.eval(feed_dict=feed_dict)
-                    summary = merged.eval(feed_dict=feed_dict)
-                else: # If we have a TensorFlow-style optimizer
-                    summary, lo, meanse, meanabse, l1norm, l2norm, _  = sess.run([merged, loss, mse, mabse, l1_norm, l2_norm, train_step],
-                                                      feed_dict=feed_dict,
-                                                      options=run_options,
-                                                      run_metadata=run_metadata
-                                                      )
-                train_writer.add_summary(summary, ii)
 
-                # Extra debugging every steps_per_report
-                if not ii % steps_per_report and (ii != 0 or steps_per_report == 1):
-                    tl = timeline.Timeline(run_metadata.step_stats)
-                    ctf = tl.generate_chrome_trace_format()
-                    with open('timeline_run.json', 'w') as f:
-                        f.write(ctf)
-                # Add to CSV log buffer
-                if track_training_time is True:
-                    train_log.loc[ii] = (epoch, time.time() - train_start, lo, meanse, meanabse, l1norm, l2norm)
+            ########
+            # After-epoch stuff
+            ########
+
+            # Write figures, summaries and check early stopping each epoch
+            if track_training_time is True:
+                step_start = time.time()
+            # Run with full trace every epochs_per_report Gives full runtime information
+            if not ii % epochs_per_report and epochs_per_report != np.inf:
+                run_options = tf.RunOptions(
+                    trace_level=tf.RunOptions.FULL_TRACE)
+                run_metadata = tf.RunMetadata()
+            else:
+                run_options = None
+                run_metadata = None
+
+            # Calculate all variables with the validation set
+            summary, lo, meanse, meanabse, l1norm, l2norm  = sess.run([merged, loss, mse, mabse, l1_norm, l2_norm],
+                                                                                     feed_dict={handle: val_handle},
+                                           options=run_options,
+                                           run_metadata=run_metadata)
+
+
+            validation_writer.add_summary(summary, ii)
+            # More debugging every epochs_per_report
+            if not ii % epochs_per_report and epochs_per_report != np.inf:
+                tl = timeline.Timeline(run_metadata.step_stats)
+                ctf = tl.generate_chrome_trace_format()
+                with open('timeline.json', 'w') as f:
+                    f.write(ctf)
+
+                validation_writer.add_run_metadata(run_metadata, 'step%d' % ii)
+
+            # Save checkpoint
+            save_path = saver.save(sess, os.path.join(checkpoint_dir,
+            'model.ckpt'), global_step=ii)
+
+            # Update CSV logs
+            if track_training_time is True:
+                validation_log.loc[ii] = (epoch, time.time() - train_start, lo, meanse, meanabse, l1norm, l2norm)
+
+                validation_log.loc[ii:].to_csv(validation_log_file, header=False)
+                validation_log = validation_log[0:0]
+                train_log.loc[ii - minibatches:].to_csv(train_log_file, header=False)
+                train_log = train_log[0:0]
+
+            # Determine early-stopping criterion
+            if settings['early_stop_measure'] == 'mse':
+                early_measure = meanse
+            elif settings['early_stop_measure'] == 'loss':
+                early_measure = lo
+            elif settings['early_stop_measure'] == 'none':
+                early_measure = np.nan
+
+            # Early stopping, check if measure is better
+            if early_measure < best_early_measure:
+                best_early_measure = early_measure
+                if save_best_networks:
+                    nn_best_file = os.path.join(checkpoint_dir,
+                                                  'nn_checkpoint_' + str(epoch) + '.json')
+                    trainable = {x.name: tf.to_double(x).eval(session=sess).tolist() for x in tf.trainable_variables()}
+                    model_to_json(nn_best_file, 
+                                  trainable,
+                                  scan_dims.values.tolist(),
+                                  train_dims.values.tolist(),
+                                  train_input_df.min(),
+                                  train_input_df.max(),
+                                  train_target_df.min(),
+                                  train_target_df.max(),
+                                  scale_factor.astype('float64'),
+                                  scale_bias.astype('float64'),
+                                  l2_scale,
+                                  settings)
+                not_improved = 0
+            else: # If early measure is not better
+                not_improved += 1
+            # If not improved in 'early_stop' epoch, stop
+            if settings['early_stop_measure'] != 'none' and not_improved >= settings['early_stop_after']:
+                if save_checkpoint_networks:
+                    nn_checkpoint_file = os.path.join(checkpoint_dir,
+                                                  'nn_checkpoint_' + str(epoch) + '.json')
+                    trainable = {x.name: tf.to_double(x).eval(session=sess).tolist() for x in tf.trainable_variables()}
+                    model_to_json(nn_checkpoint_file,
+                                  trainable,
+                                  scan_dims.values.tolist(),
+                                  train_dims.values.tolist(),
+                                  train_input_df.min(),
+                                  train_input_df.max(),
+                                  train_target_df.min(),
+                                  train_target_df.max(),
+                                  scale_factor.astype('float64'),
+                                  scale_bias.astype('float64'),
+                                  l2_scale,
+                                  settings)
+
+                print('Not improved for %s epochs, stopping..'
+                      % (not_improved))
+                break
 
             # Stop if loss is nan or inf
             if np.isnan(lo) or np.isinf(lo):
@@ -538,7 +568,10 @@ def train(settings, warm_start_nn=None, wdir='.'):
                   trainable,
                   scan_dims.values.tolist(),
                   train_dims.values.tolist(),
-                  datasets.train,
+                  train_input_df.min(),
+                  train_input_df.max(),
+                  train_target_df.min(),
+                  train_target_df.max(),
                   scale_factor,
                   scale_bias.astype('float64'),
                   l2_scale,
@@ -548,18 +581,17 @@ def train(settings, warm_start_nn=None, wdir='.'):
     print("Training time was {:.0f} seconds".format(time.time() - train_start))
 
     # Finally, check against validation set
-    xs, ys = datasets.validation.next_batch(-1, shuffle=False)
-    feed_dict = {x: xs, y_ds: ys, is_train: False}
+    feed_dict = {handle: val_handle, is_train: False}
     rms_val = np.round(np.sqrt(mse.eval(feed_dict, session=sess)), 4)
     loss_val = np.round(loss.eval(feed_dict, session=sess), 4)
     print('{:22} {:5.2f}'.format('Validation RMS error: ', rms_val))
 
     # And to be sure, test against test and train set
-    xs, ys = datasets.test.next_batch(-1, shuffle=False)
-    feed_dict = {x: xs, y_ds: ys, is_train: False}
-    rms_test = np.round(np.sqrt(mse.eval(feed_dict, session=sess)), 4)
-    loss_test = np.round(loss.eval(feed_dict, session=sess), 4)
-    print('{:22} {:5.2f}'.format('Test RMS error: ', rms_test))
+    #xs, ys = datasets.test.next_batch(-1, shuffle=False)
+    #feed_dict = {x: xs, y_ds: ys, is_train: False}
+    #rms_test = np.round(np.sqrt(mse.eval(feed_dict, session=sess)), 4)
+    #loss_test = np.round(loss.eval(feed_dict, session=sess), 4)
+    #print('{:22} {:5.2f}'.format('Test RMS error: ', rms_test))
     #xs, ys = datasets.train.next_batch(-1, shuffle=False)
     #feed_dict = {x: xs, y_ds: ys, is_train: False}
     #rms_train = np.round(np.sqrt(mse.eval(feed_dict)), 4)
@@ -569,10 +601,10 @@ def train(settings, warm_start_nn=None, wdir='.'):
     metadata = {'epoch':           epoch,
                 'best_epoch':      best_epoch,
                 'rms_validation':  float(rms_val),
-                'rms_test':        float(rms_test),
+    #            'rms_test':        float(rms_test),
     #            'rms_train':      float(rms_train),
                 'loss_validation': float(loss_val),
-                'loss_test':       float(loss_test),
+    #            'loss_test':       float(loss_test),
     #            'loss_train':     float(loss_train)
                 }
 

@@ -4,15 +4,16 @@ import subprocess
 import json
 
 def model_to_json(name, trainable, feature_names, target_names,
-                  train_set, scale_factor, scale_bias, l2_scale, settings):
+                  feature_min, feature_max, target_min, target_max,
+                  scale_factor, scale_bias, l2_scale, settings):
     trainable['prescale_factor'] = scale_factor.astype('float64').to_dict()
     trainable['prescale_bias'] = scale_bias.astype('float64').to_dict()
-    trainable['feature_min'] = dict(train_set._features.astype('float64').min())
-    trainable['feature_max'] = dict(train_set._features.astype('float64').max())
+    trainable['feature_min'] = dict(feature_min.astype('float64'))
+    trainable['feature_max'] = dict(feature_max.astype('float64'))
     trainable['feature_names'] = feature_names
     trainable['target_names'] = target_names
-    trainable['target_min'] = dict(train_set._target.astype('float64').min())
-    trainable['target_max'] = dict(train_set._target.astype('float64').max())
+    trainable['target_min'] = dict(target_min.astype('float64'))
+    trainable['target_max'] = dict(target_max.astype('float64'))
     trainable['hidden_activation'] = settings['hidden_activation']
     trainable['output_activation'] = settings['output_activation']
 
