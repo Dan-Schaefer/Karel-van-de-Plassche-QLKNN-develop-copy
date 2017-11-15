@@ -19,7 +19,9 @@ import subprocess
 import tensorflow as tf
 from tensorflow.contrib import opt
 from tensorflow.python.client import timeline
-from tensorflow.contrib.data import Dataset, Iterator
+#from tensorflow.data import Dataset, Iterator
+Dataset = tf.data.Dataset
+Iterator = tf.data.Iterator
 from itertools import product
 
 
@@ -97,10 +99,6 @@ def train(settings, warm_start_nn=None, wdir='.'):
     train_dims = target_df.columns
     scan_dims = input_df.columns
 
-    features = tf.placeholder(settings['dtype'], (None, input_df.shape[1]))
-    targets = tf.placeholder(settings['dtype'], (None, target_df.shape[1]))
-
-
     # [Other transformations on `dataset`...]
     # Keep option to restore splitted dataset from file for debugging
     #restore_split_backup = False
@@ -153,20 +151,28 @@ def train(settings, warm_start_nn=None, wdir='.'):
         train_target_df = target_df[val_boundary:]
 
         train_dataset = Dataset.from_tensor_slices((train_input_df, train_target_df))
+        #features = tf.placeholder(settings['dtype'], (train_input_df.shape))
+        #targets = tf.placeholder(settings['dtype'], (train_target_df.shape))
+        #train_dataset = Dataset.from_tensor_slices((features, targets))
         val_dataset = Dataset.from_tensor_slices((val_input_df, val_target_df))
         batch_size = int(np.ceil(len(input_df)/minibatches))
 
         val_iterator = val_dataset.batch(len(val_input_df)).repeat().make_initializable_iterator()
+        #train_dataset = train_dataset.shuffle(buffer_size=int(10*batch_size))
         train_dataset = train_dataset.batch(batch_size)
-        #train_dataset = train_dataset.shuffle(buffer_size=batch_size + 1)
-        #train_dataset = train_dataset.prefetch(int(1.5 * batch_size))
-        train_dataset = train_dataset.repeat()
+        train_dataset = train_dataset.prefetch(2*int(minibatches))
+        train_dataset = train_dataset.repeat(10)
         train_iterator = train_dataset.make_initializable_iterator()
         handle = tf.placeholder(tf.string, shape=[])
 
         iterator = Iterator.from_string_handle(
                 handle, train_dataset.output_types, train_dataset.output_shapes)
         x, y_ds = iterator.get_next()
+    #sess.run(train_iterator.initializer)
+    #sess.run(train_iterator.initializer,
+    #                                  feed_dict={
+    #                                  features: train_input_df,
+    #                                  targets: train_target_df})
     timediff(start, 'Dataset split')
 
     # Standardize input
@@ -348,8 +354,9 @@ def train(settings, warm_start_nn=None, wdir='.'):
     train_log = pd.DataFrame(columns=['epoch', 'walltime', 'loss', 'mse', 'mabse', 'l1_norm', 'l2_norm'])
     validation_log = pd.DataFrame(columns=['epoch', 'walltime', 'loss', 'mse', 'mabse', 'l1_norm', 'l2_norm'])
 
-    sess.run(val_iterator.initializer, feed_dict={                                              features: val_input_df,
-                                              targets: val_target_df})
+    sess.run(val_iterator.initializer)
+    #, feed_dict={                                              features: val_input_df,
+    #                                          targets: val_target_df})
 
     train_handle = sess.run(train_iterator.string_handle())
     val_handle = sess.run(val_iterator.string_handle())
@@ -393,9 +400,6 @@ def train(settings, warm_start_nn=None, wdir='.'):
     timediff(start, 'Training started')
     train_start = time.time()
     ii = 0
-    sess.run(train_iterator.initializer, feed_dict={
-                                      features: train_input_df,
-                                      targets: train_target_df})
     try:
         for epoch in range(max_epoch):
             print('epoch', epoch, 'step', 'pre', 'starting', time.time() - train_start)
@@ -405,8 +409,10 @@ def train(settings, warm_start_nn=None, wdir='.'):
 
             print('epoch', epoch, 'step', 'pre', 'initialized', time.time() - train_start)
             for step in range(minibatches):
+                step_start = time.time()
                 # Extra debugging every steps_per_report
                 if not step % steps_per_report and steps_per_report != np.inf:
+                    print('secretdebug')
                     run_options = tf.RunOptions(
                         trace_level=tf.RunOptions.FULL_TRACE)
                     run_metadata = tf.RunMetadata()
@@ -433,7 +439,8 @@ def train(settings, warm_start_nn=None, wdir='.'):
                                                       options=run_options,
                                                       run_metadata=run_metadata
                                                       )
-                print('epoch', epoch, 'step', step, 'train step done', time.time() - train_start)
+                #print('epoch', epoch, 'step', step, 'train step done', time.time() - train_start)
+                print('epoch', epoch, 'step', step, 'train step took', time.time() - step_start)
                 train_writer.add_summary(summary, step)
 
                 # Extra debugging every steps_per_report
