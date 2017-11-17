@@ -121,6 +121,15 @@ class TrainRepeatingBatch(luigi.WrapperTask):
         for ii in range(self.repeat):
             yield TrainNN(self.settings, self.train_dims, self.task_id + '_' + str(ii))
 
+class TrainDivSumBatch(TrainBatch):
+    primitives = ['ef',
+                  'efITG',
+                  'efTEM',
+                  'pf']
+    with open(os.path.join(os.path.dirname(__file__), 'default_settings.json')) as file_:
+        settings = json.load(file_)
+        settings.pop('train_dims')
+
 class TrainDenseBatch(TrainBatch):
     dim = 7
     plan = {'cost_l2_scale': [0.05, 0.1, 0.2],
