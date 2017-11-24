@@ -104,8 +104,8 @@ def standardize(input_df, target_df, settings, warm_start_nn):
         scale_bias = pd.concat([warm_start_nn._feature_prescale_bias,
                                   warm_start_nn._target_prescale_bias])
 
-    input_df = scale_panda(input_df, scale_factor, scale_bias)
-    target_df = scale_panda(target_df, scale_factor, scale_bias)
+    #input_df = scale_panda(input_df, scale_factor, scale_bias)
+    #target_df = scale_panda(target_df, scale_factor, scale_bias)
     return input_df, target_df, scale_factor, scale_bias
 
 class QLKNet:
@@ -180,7 +180,6 @@ def train(settings, warm_start_nn=None, wdir='.'):
     input_df, target_df = prep_dataset(settings)
     input_df, target_df, scale_factor, scale_bias = standardize(input_df, target_df, settings, warm_start_nn=warm_start_nn)
 
-    # Standardize input
     timediff(start, 'Scaling defined')
 
     train_dims = target_df.columns
@@ -200,10 +199,19 @@ def train(settings, warm_start_nn=None, wdir='.'):
                            [None, len(scan_dims)], name='x-input')
         y_ds = tf.placeholder(x.dtype, [None, len(train_dims)], name='y-input')
 
-    net = QLKNet(x, len(train_dims), settings, warm_start_nn=warm_start_nn)
-    y = net.y
+    in_factor = tf.constant(scale_factor[scan_dims].values, dtype=x.dtype)
+    in_bias = tf.constant(scale_bias[scan_dims].values, dtype=x.dtype)
+
+    x_scaled = in_factor * x + in_bias
+
+
+    net = QLKNet(x_scaled, len(train_dims), settings, warm_start_nn=warm_start_nn)
+    y_scaled = net.y
     is_train = net.is_train
 
+    out_factor = tf.constant(scale_factor[train_dims].values, dtype=x.dtype)
+    out_bias = tf.constant(scale_bias[train_dims].values, dtype=x.dtype)
+    y = (y_scaled - out_bias) / out_factor
 
     timediff(start, 'NN defined')
 
