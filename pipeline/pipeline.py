@@ -82,7 +82,6 @@ class TrainNN(luigi.contrib.postgres.CopyToTable):
                 import time
                 exc_type = type(err)
                 exc_traceback = sys.exc_info()[2]
-                print(os.listdir('.'))
                 timeout = 60
                 sleep_time = 1
                 exc_value = 'STDOUT:\n'
