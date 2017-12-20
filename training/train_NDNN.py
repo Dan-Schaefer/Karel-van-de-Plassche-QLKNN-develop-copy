@@ -16,6 +16,10 @@ import io
 from shutil import copyfile
 import subprocess
 
+if not (sys.version_info > (3, 0)):
+    range = xrange
+
+from IPython import embed
 import tensorflow as tf
 from tensorflow.contrib import opt
 from tensorflow.python.client import timeline

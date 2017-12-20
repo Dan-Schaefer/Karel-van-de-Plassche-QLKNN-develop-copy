@@ -20,6 +20,8 @@ import time
 import tempfile
 import socket
 import subprocess
+from subprocess import Popen
+import re
 
 #class TrainNNWorkflow():
 #    def workflow(self):
@@ -37,6 +39,12 @@ class TrainNN(luigi.contrib.postgres.CopyToTable):
     settings = luigi.DictParameter()
     train_dims = luigi.ListParameter()
     uid = luigi.Parameter()
+    master_pid = os.getpid()
+
+    if socket.gethostname().startswith('r0'):
+        machine_type = 'marconi'
+    else:
+        machine_type = 'general'
 
 
     database = 'nndb'
@@ -50,11 +58,55 @@ class TrainNN(luigi.contrib.postgres.CopyToTable):
     password=split[-1].strip()
     columns = [('network_id', 'INT')]
 
+    def run_async_io_cmd(self, cmd):
+        proc = Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+        print(' '.join(cmd))
+        for stdout_line in iter(proc.stdout.readline, ""):
+            yield stdout_line
+        proc.stdout.close()
+        return_code = proc.wait()
+        if return_code:
+            raise subprocess.CalledProcessError(return_code, cmd)
+
     def launch_train_NDNN(self):
-        if socket.gethostname().startswith('r0') or True:
-            cmd = ' '.join(['qsub', '-A', 'FUA21_LINGK', '-q', 'xfuaknldebug', '-l', 'select=1', '-l', 'walltime=00:01:00', 'python train_NDNN.py'])
-            cmd = ' '.join(['python train_NDNN.py'])
-            subprocess.check_call(cmd, shell=True, stdout=None, stderr=None)
+        if self.machine_type == 'marconi' or True:
+            pipeline_path = os.path.dirname(os.path.abspath( __file__ ))
+            cmd = ['qsub', '-Wblock=true', '-o', 'stdout', '-e', 'stderr', os.path.join(pipeline_path, 'train_NDNN_pbs.sh')]
+            try:
+                for line in self.run_async_io_cmd(cmd):
+                    if re.match('(\d{6,6}\.\w\d\d\d\w\d\d\w\d\d$)', line) is not None:
+                        self.job_id = line
+                        self.set_status_message('Submitted job {!s}'.format(self.job_id))
+                    print(line)
+            except subprocess.CalledProcessError as err:
+                import time
+                exc_type = type(err)
+                exc_traceback = sys.exc_info()[2]
+                print(os.listdir('.'))
+                timeout = 60
+                sleep_time = 1
+                exc_value = 'STDOUT:\n'
+                for ii in range(timeout):
+                    try:
+                        with open('stdout') as file_:
+                            exc_value += file_.read()
+                    except IOError:
+                        time.sleep(sleep_time)
+                    else:
+                        break
+                exc_value += 'STDERR:\n'
+                for ii in range(timeout):
+                    try:
+                        with open('stderr') as file_:
+                            exc_value += file_.read()
+                    except IOError:
+                        time.sleep(sleep_time)
+                    else:
+                        break
+                new_exc = RuntimeError(exc_value)
+                raise new_exc.__class__, new_exc, exc_traceback
+            #cmd = ' '.join(['python train_NDNN.py'])
+            #subprocess.check_call(cmd, shell=True, stdout=None, stderr=None)
         else:
             train_NDNN.train_from_folder()
 
@@ -65,7 +117,11 @@ class TrainNN(luigi.contrib.postgres.CopyToTable):
         settings = dict(self.settings)
         settings['train_dims'] = self.train_dims
         old_dir = os.getcwd()
-        self.tmpdirname = tmpdirname = tempfile.mkdtemp(prefix='trainNN_')
+        if self.machine_type == 'marconi':
+            tmproot = os.environ['CINECA_SCRATCH']
+        else:
+            tmproot = None
+        self.tmpdirname = tmpdirname = tempfile.mkdtemp(prefix='trainNN_', dir=tmproot)
         print('created temporary directory', tmpdirname)
         train_script_path = os.path.join(training_path, 'train_NDNN.py')
         TrainScript.from_file(train_script_path)
@@ -100,7 +156,8 @@ class TrainNN(luigi.contrib.postgres.CopyToTable):
         yield [self.NNDB_nn.id]
 
     def on_failure(self, exception):
-        print('Training failed! Killing worker')
+        print('Training failed! Killing master {!s} of worker {!s}'.format(self.master_pid, os.getpid()))
+        os.kill(self.master_pid, signal.SIGUSR1)
         os.kill(os.getpid(), signal.SIGUSR1)
         traceback_string = traceback.format_exc()
         with open('traceback.dump', 'w') as file_:
@@ -113,7 +170,9 @@ class TrainNN(luigi.contrib.postgres.CopyToTable):
         return message
 
     def on_success(self):
+        print('Training success! Killing master {!s} of worker {!s}'.format(self.master_pid, os.getpid()))
         os.kill(os.getpid(), signal.SIGUSR1)
+        os.kill(self.master_pid, signal.SIGUSR1)
 
 class TrainBatch(luigi.WrapperTask):
     submit_date = luigi.DateHourParameter()
