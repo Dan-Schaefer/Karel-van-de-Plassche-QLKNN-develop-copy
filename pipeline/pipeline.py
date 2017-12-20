@@ -154,7 +154,7 @@ class TrainNN(luigi.contrib.postgres.CopyToTable):
             else:
                 break
         if not hasattr(self, 'NNDB_nn'):
-            raise exception
+            raise reraise(type(exception), exception, sys.exc_info()[2])
         else:
             os.chdir(old_dir)
             shutil.rmtree(tmpdirname)

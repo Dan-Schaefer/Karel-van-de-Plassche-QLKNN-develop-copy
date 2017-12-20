@@ -439,7 +439,7 @@ class Network(BaseModel):
             if os.path.isdir(path_):
                 try:
                     Network.from_folder(path_, **kwargs)
-                except FileNotFoundError:
+                except OSError:
                     print('Could not parse', path_, 'is training done?')
 
     @classmethod
