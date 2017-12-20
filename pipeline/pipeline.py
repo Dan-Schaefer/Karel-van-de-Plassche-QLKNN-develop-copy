@@ -19,6 +19,7 @@ from itertools import product
 import time
 import tempfile
 import socket
+import subprocess
 
 #class TrainNNWorkflow():
 #    def workflow(self):
@@ -49,6 +50,14 @@ class TrainNN(luigi.contrib.postgres.CopyToTable):
     password=split[-1].strip()
     columns = [('network_id', 'INT')]
 
+    def launch_train_NDNN(self):
+        if socket.gethostname().startswith('r0') or True:
+            cmd = ' '.join(['qsub', '-A', 'FUA21_LINGK', '-q', 'xfuaknldebug', '-l', 'select=1', '-l', 'walltime=00:01:00', 'python train_NDNN.py'])
+            cmd = ' '.join(['python train_NDNN.py'])
+            subprocess.check_call(cmd, shell=True, stdout=None, stderr=None)
+        else:
+            train_NDNN.train_from_folder()
+
     def run(self):
         self.set_status_message('Starting job')
         os.chdir(os.path.dirname(__file__))
@@ -60,13 +69,14 @@ class TrainNN(luigi.contrib.postgres.CopyToTable):
         print('created temporary directory', tmpdirname)
         train_script_path = os.path.join(training_path, 'train_NDNN.py')
         TrainScript.from_file(train_script_path)
-        shutil.copy(os.path.join(train_script_path), os.path.join(tmpdirname, 'train_NDNN.py'))
+        #shutil.copy(os.path.join(train_script_path), os.path.join(tmpdirname, 'train_NDNN.py'))
+        os.symlink(os.path.join(train_script_path), os.path.join(tmpdirname, 'train_NDNN.py'))
         settings['dataset_path'] = os.path.abspath(settings['dataset_path'])
         with open(os.path.join(tmpdirname, 'settings.json'), 'w') as file_:
             json.dump(settings, file_)
         os.chdir(tmpdirname)
         self.set_status_message('Started training on {!s}'.format(socket.gethostname()))
-        train_NDNN.train(settings)
+        self.launch_train_NDNN()
         print('Training done!')
         for ii in range(10):
             self.set_status_message('Trying to submit to NNDB, try: {!s} / 10 on {!s}'.format(ii+1, socket.gethostname()))

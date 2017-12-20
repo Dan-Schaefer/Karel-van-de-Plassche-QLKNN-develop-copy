@@ -173,7 +173,7 @@ class QLKNet:
             act = None
         self.y = nn_layer(layers[-1], num_target_dims, 'layer' + str(len(layers)), dtype=x.dtype, act=act, debug=debug, bias_init=bias_init, weight_init=weight_init)
 
-def train(settings, warm_start_nn=None, wdir='.'):
+def train(settings, warm_start_nn=None):
     tf.reset_default_graph()
     start = time.time()
 
@@ -576,13 +576,16 @@ def train(settings, warm_start_nn=None, wdir='.'):
         json.dump(data, nn_file, sort_keys=True, indent=4, separators=(',', ': '))
     sess.close()
 
+def train_NDNN_from_folder(warm_start_nn=None):
+    with open('./settings.json') as file_:
+        settings = json.load(file_)
+    train(settings, warm_start_nn=warm_start_nn)
+
 def main(_):
     nn=None
     #from run_model import QuaLiKizNDNN
     #nn = QuaLiKizNDNN.from_json('nn.json')
-    with open('./settings.json') as file_:
-        settings = json.load(file_)
-    train(settings, warm_start_nn=nn)
+    train_NDNN_from_folder(warm_start_nn=nn)
 
 
 if __name__ == '__main__':
