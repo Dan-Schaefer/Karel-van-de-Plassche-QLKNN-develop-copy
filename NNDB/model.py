@@ -439,7 +439,7 @@ class Network(BaseModel):
             if os.path.isdir(path_):
                 try:
                     Network.from_folder(path_, **kwargs)
-                except OSError:
+                except IOError:
                     print('Could not parse', path_, 'is training done?')
 
     @classmethod
@@ -736,7 +736,7 @@ class TrainMetadata(BaseModel):
                 try:
                     with open(os.path.join(pwd, name + '_log.csv')) as file_:
                         df = pd.DataFrame.from_csv(file_)
-                except FileNotFoundError:
+                except IOError:
                     pass
                 else:
                     try:
