@@ -27,6 +27,17 @@ import re
 #    def workflow(self):
 #        train_nn = self.new_task('train_nn', TrainNN, path='test2')
 #        return train_nn
+if sys.version_info.major < 3:  # Python 2?
+    # Using exec avoids a SyntaxError in Python 3.
+    exec("""def reraise(exc_type, exc_value, exc_traceback=None):
+                raise exc_type, exc_value, exc_traceback""")
+else:
+    def reraise(exc_type, exc_value, exc_traceback=None):
+        if exc_value is None:
+            exc_value = exc_type()
+        if exc_value.__traceback__ is not exc_traceback:
+            raise exc_value.with_traceback(exc_traceback)
+        raise exc_value
 
 def check_settings_dict(settings):
     for var in ['train_dims']:
@@ -69,7 +80,7 @@ class TrainNN(luigi.contrib.postgres.CopyToTable):
             raise subprocess.CalledProcessError(return_code, cmd)
 
     def launch_train_NDNN(self):
-        if self.machine_type == 'marconi' or True:
+        if self.machine_type == 'marconi':
             pipeline_path = os.path.dirname(os.path.abspath( __file__ ))
             cmd = ['qsub', '-Wblock=true', '-o', 'stdout', '-e', 'stderr', os.path.join(pipeline_path, 'train_NDNN_pbs.sh')]
             try:
@@ -103,11 +114,11 @@ class TrainNN(luigi.contrib.postgres.CopyToTable):
                     else:
                         break
                 new_exc = RuntimeError(exc_value)
-                raise new_exc.__class__, new_exc, exc_traceback
+                reraise(new_exc.__class__, new_exc, exc_traceback)
             #cmd = ' '.join(['python train_NDNN.py'])
             #subprocess.check_call(cmd, shell=True, stdout=None, stderr=None)
         else:
-            train_NDNN.train_from_folder()
+            train_NDNN.train_NDNN_from_folder()
 
     def run(self):
         self.set_status_message('Starting job')
