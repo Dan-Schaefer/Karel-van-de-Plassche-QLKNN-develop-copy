@@ -180,9 +180,10 @@ class TrainNN(luigi.contrib.postgres.CopyToTable):
         return message
 
     def on_success(self):
-        print('Training success! Killing master {!s} of worker {!s}'.format(self.master_pid, os.getpid()))
-        os.kill(os.getpid(), signal.SIGUSR1)
-        os.kill(self.master_pid, signal.SIGUSR1)
+        print('Training success!')
+        #print('Killing master {!s} of worker {!s}'.format(self.master_pid, os.getpid()))
+        #os.kill(os.getpid(), signal.SIGUSR1)
+        #os.kill(self.master_pid, signal.SIGUSR1)
 
 class TrainBatch(luigi.WrapperTask):
     submit_date = luigi.DateHourParameter()
