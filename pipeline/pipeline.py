@@ -158,7 +158,7 @@ class TrainNN(luigi.contrib.postgres.CopyToTable):
         else:
             os.chdir(old_dir)
             shutil.rmtree(tmpdirname)
-            super().run()
+            super(TrainNN, self).run()
             self.set_status_message('Done! NNDB id: {!s}'.format(self.NNDB_nn.id))
             print("train_job done")
 
