@@ -88,7 +88,6 @@ def get_similar_not_in_table(table, max=20, only_sep=False, no_particle=False):
         tags = ["div", "plus"]
         if no_particle is True:
             tags.append('pf')
-        print(tags)
         non_sliced = no_elements_in_list(cls, tags)
         if only_sep is True:
             non_sliced &= elements_in_list(cls, ['TEM', 'ITG', 'ETG'])
@@ -649,8 +648,8 @@ if __name__ == '__main__':
     mode = 'pretty'
     mode = 'debug'
     submit_to_nndb = False
-    #mode = 'quick'
-    #submit_to_nndb = True
+    mode = 'quick'
+    submit_to_nndb = True
 
     store = pd.HDFStore('../7D_nions0_flat.h5')
     store = pd.HDFStore('../7D_nions0_flat.h5')
